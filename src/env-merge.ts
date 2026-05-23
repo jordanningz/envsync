@@ -1,9 +1,8 @@
 import { parseEnvFile, formatEnvFile } from './store';
 
-export type MergeStrategy = 'ours' | 'theirs' | 'interactive';
-
 export interface MergeConflict {
   key: string;
+  base: string | undefined;
   ours: string | undefined;
   theirs: string | undefined;
 }
@@ -13,58 +12,53 @@ export interface MergeResult {
   conflicts: MergeConflict[];
 }
 
-/**
- * Merge two env file contents using the given strategy.
- * 'ours'   — prefer local values on conflict
- * 'theirs' — prefer remote values on conflict
- * 'interactive' — collect conflicts for manual resolution
- */
-export function mergeEnvFiles(
-  ours: string,
-  theirs: string,
-  strategy: MergeStrategy = 'ours'
-): MergeResult {
-  const ourMap = parseEnvFile(ours);
-  const theirMap = parseEnvFile(theirs);
+export function mergeEnvFiles(base: string, ours: string, theirs: string): MergeResult {
+  const baseMap = parseEnvFile(base);
+  const oursMap = parseEnvFile(ours);
+  const theirsMap = parseEnvFile(theirs);
 
-  const allKeys = new Set([...Object.keys(ourMap), ...Object.keys(theirMap)]);
+  const allKeys = new Set([...Object.keys(baseMap), ...Object.keys(oursMap), ...Object.keys(theirsMap)]);
   const merged: Record<string, string> = {};
   const conflicts: MergeConflict[] = [];
 
   for (const key of allKeys) {
-    const ourVal = ourMap[key];
-    const theirVal = theirMap[key];
+    const b = baseMap[key];
+    const o = oursMap[key];
+    const t = theirsMap[key];
 
-    if (ourVal === theirVal) {
-      // identical or both undefined — just use whichever exists
-      merged[key] = ourVal ?? theirVal ?? '';
-    } else if (ourVal === undefined) {
-      merged[key] = theirVal!;
-    } else if (theirVal === undefined) {
-      merged[key] = ourVal;
+    const oursChanged = o !== b;
+    const theirsChanged = t !== b;
+
+    if (!oursChanged && !theirsChanged) {
+      // No change on either side — keep base (or ours/theirs, all equal)
+      if (b !== undefined) merged[key] = b;
+    } else if (oursChanged && !theirsChanged) {
+      // Only ours changed
+      if (o !== undefined) merged[key] = o;
+    } else if (!oursChanged && theirsChanged) {
+      // Only theirs changed
+      if (t !== undefined) merged[key] = t;
+    } else if (o === t) {
+      // Both changed to same value
+      if (o !== undefined) merged[key] = o;
     } else {
-      // genuine conflict
-      if (strategy === 'ours') {
-        merged[key] = ourVal;
-      } else if (strategy === 'theirs') {
-        merged[key] = theirVal;
-      } else {
-        // interactive: leave unresolved, record conflict
-        conflicts.push({ key, ours: ourVal, theirs: theirVal });
-      }
+      // True conflict
+      conflicts.push({ key, base: b, ours: o, theirs: t });
     }
   }
 
   return { merged, conflicts };
 }
 
-/**
- * Apply resolved conflict values into the merged map and return the final env content.
- */
-export function applyResolutions(
-  merged: Record<string, string>,
-  resolutions: Record<string, string>
-): string {
-  const final = { ...merged, ...resolutions };
+export function applyResolutions(result: MergeResult, resolutions: Record<string, string>): string {
+  const final: Record<string, string> = { ...result.merged };
+
+  for (const conflict of result.conflicts) {
+    const resolution = resolutions[conflict.key];
+    if (resolution !== undefined && resolution !== '') {
+      final[conflict.key] = resolution;
+    }
+  }
+
   return formatEnvFile(final);
 }
