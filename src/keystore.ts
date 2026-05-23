@@ -1,61 +1,57 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import * as crypto from 'crypto';
-import { EnvsyncConfig, ensureKeyDir } from './config';
+import { deriveKey, encrypt, decrypt } from './crypto';
+import { getKeyFilePath, ensureKeyDir } from './config';
 
-const KEY_BYTE_LENGTH = 32;
+const KEY_LENGTH = 32; // 256-bit key
 
 export function generateKey(): Buffer {
-  return crypto.randomBytes(KEY_BYTE_LENGTH);
+  return crypto.randomBytes(KEY_LENGTH);
 }
 
-export function saveKey(key: Buffer, config: EnvsyncConfig): void {
-  ensureKeyDir(config);
-  fs.writeFileSync(config.keyFile, key.toString('hex') + '\n', {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
+export async function saveKey(key: Buffer, passphrase: string): Promise<void> {
+  await ensureKeyDir();
+  const keyPath = getKeyFilePath();
+  const encrypted = await encrypt(key.toString('hex'), passphrase);
+  fs.writeFileSync(keyPath, JSON.stringify(encrypted), { mode: 0o600 });
 }
 
-export function loadKey(config: EnvsyncConfig): Buffer {
-  if (!fs.existsSync(config.keyFile)) {
-    throw new Error(
-      `Key file not found at ${config.keyFile}. Run 'envsync init' to generate a key.`
-    );
+export async function loadKey(passphrase: string): Promise<Buffer> {
+  const keyPath = getKeyFilePath();
+  if (!fs.existsSync(keyPath)) {
+    throw new Error(`Key file not found at ${keyPath}. Run 'envsync init' first.`);
   }
-
-  const raw = fs.readFileSync(config.keyFile, 'utf-8').trim();
-
-  if (!/^[0-9a-f]{64}$/i.test(raw)) {
-    throw new Error(`Key file at ${config.keyFile} is invalid or corrupted.`);
-  }
-
-  return Buffer.from(raw, 'hex');
+  const raw = fs.readFileSync(keyPath, 'utf8');
+  const encrypted = JSON.parse(raw);
+  const hex = await decrypt(encrypted, passphrase);
+  return Buffer.from(hex, 'hex');
 }
 
-export function keyExists(config: EnvsyncConfig): boolean {
-  return fs.existsSync(config.keyFile);
+export function keyExists(): boolean {
+  const keyPath = getKeyFilePath();
+  return fs.existsSync(keyPath);
 }
 
-export function initKey(config: EnvsyncConfig, force: boolean = false): Buffer {
-  if (keyExists(config) && !force) {
-    throw new Error(
-      `Key already exists at ${config.keyFile}. Use --force to overwrite.`
-    );
+export async function initKey(passphrase: string): Promise<Buffer> {
+  if (keyExists()) {
+    throw new Error('Key already exists. Use --force to overwrite.');
   }
   const key = generateKey();
-  saveKey(key, config);
+  await saveKey(key, passphrase);
   return key;
 }
 
-export function exportKeyHex(config: EnvsyncConfig): string {
-  const key = loadKey(config);
-  return key.toString('hex');
+export async function rotateKey(
+  oldPassphrase: string,
+  newPassphrase: string
+): Promise<Buffer> {
+  const existing = await loadKey(oldPassphrase);
+  await saveKey(existing, newPassphrase);
+  return existing;
 }
 
-export function importKeyHex(hex: string, config: EnvsyncConfig): void {
-  if (!/^[0-9a-f]{64}$/i.test(hex.trim())) {
-    throw new Error('Invalid key hex string. Expected 64 hex characters.');
-  }
-  const key = Buffer.from(hex.trim(), 'hex');
-  saveKey(key, config);
+export async function exportKey(passphrase: string): Promise<string> {
+  const key = await loadKey(passphrase);
+  return key.toString('base64');
 }
